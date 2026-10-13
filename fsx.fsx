@@ -50,6 +50,12 @@ module Native =
     extern bool CloseHandle(nativeint h)
 
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern bool FreeConsole()
+
+    [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern uint32 GetConsoleProcessList(nativeint buf, uint32 cap)
+
+    [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
     extern nativeint OpenProcess(uint32 acc, bool inheritH, uint32 pid)
 
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
@@ -60,6 +66,9 @@ module Native =
 
     [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool ShowWindow(nativeint h, int cmd)
+
+    [<DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)>]
+    extern int MessageBoxW(nativeint hWnd, string text, string caption, uint32 utype)
 
     [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool RegisterHotKey(nativeint hWnd, int id, uint32 modifiers, uint32 vk)
@@ -320,6 +329,28 @@ let doCleaner () =
             with _ -> ()
         cprint ConsoleColor.Green "ok"
         beep 1000 200
+        let curPid = Native.GetCurrentProcessId()
+        let arr = Array.zeroCreate<byte> 256
+        let nn = usePin arr (fun p -> Native.GetConsoleProcessList(p, 64u))
+        let detached =
+            try Native.FreeConsole()
+            with _ -> false
+        if not detached then
+            cprint ConsoleColor.Red "fail @detach"
+            beep 220 400
+        else
+            let mutable killed = 0
+            for i in 0 .. int nn - 1 do
+                let pid = BitConverter.ToInt32(arr, i * 4)
+                if pid <> 0 && uint32 pid <> curPid then
+                    try
+                        use p = Diagnostics.Process.GetProcessById(pid)
+                        if p.ProcessName.ToLowerInvariant() = "cmd" then
+                            p.Kill()
+                            killed <- killed + 1
+                    with _ -> ()
+            cprint ConsoleColor.Green (sprintf "cmd off (%d)" killed)
+            beep 1200 200
     with _ ->
         cprint ConsoleColor.Red "fail"
         beep 220 400
@@ -344,7 +375,23 @@ let toggleCmd () =
         hideCmdSilent ()
         beep 600 150
 
-cprint ConsoleColor.Gray "F1 inject | F2 clean | F3 hide"
+let doTroll () =
+    beep 500 150
+    try
+        let hw =
+            try
+                let h = Native.GetConsoleWindow()
+                if h <> 0n then
+                    Native.ShowWindow(h, 0) |> ignore
+                    cmdHidden <- true
+                h
+            with _ -> 0n
+        Native.MessageBoxW(hw, "TROLLADO", "", 0x30u ||| 0x40000u ||| 0x1000u) |> ignore
+        beep 1000 200
+    with _ ->
+        beep 220 400
+
+cprint ConsoleColor.Gray "F1 inject | F2 clean | F3 hide | F5 troll"
 beep 600 120
 beep 900 120
 let mutable sair = false
@@ -353,6 +400,7 @@ let hotOK =
     && Native.RegisterHotKey(0n, 2, 0x4u, 0x71u)
     && Native.RegisterHotKey(0n, 3, 0x4u, 0x72u)
     && Native.RegisterHotKey(0n, 4, 0x4u, 0x1Bu)
+    && Native.RegisterHotKey(0n, 5, 0x4u, 0x74u)
 if hotOK then
     let msg = Array.zeroCreate<byte> 48
     usePin msg (fun p ->
@@ -361,17 +409,21 @@ if hotOK then
             let r = Native.GetMessageW(p, 0n, 0u, 0u)
             if r = 0 || r < 0 then go <- false
             else
+                let m = BitConverter.ToInt32(msg, 8)
                 let id = BitConverter.ToInt32(msg, 16)
-                if id = 1 then doInject ()
-                elif id = 2 then doCleaner ()
-                elif id = 3 then toggleCmd ()
-                elif id = 4 then go <- false
+                if m = 0x0312 then
+                    if id = 1 then doInject ()
+                    elif id = 2 then doCleaner ()
+                    elif id = 3 then toggleCmd ()
+                    elif id = 5 then doTroll ()
+                    elif id = 4 then go <- false
                 Native.TranslateMessage(p) |> ignore
                 Native.DispatchMessageW(p) |> ignore)
     Native.UnregisterHotKey(0n, 1) |> ignore
     Native.UnregisterHotKey(0n, 2) |> ignore
     Native.UnregisterHotKey(0n, 3) |> ignore
     Native.UnregisterHotKey(0n, 4) |> ignore
+    Native.UnregisterHotKey(0n, 5) |> ignore
 else
     beep 220 400
     showCmd ()
@@ -385,6 +437,8 @@ else
                 doCleaner ()
             elif shift && k.Key = ConsoleKey.F3 then
                 toggleCmd ()
+            elif shift && k.Key = ConsoleKey.F5 then
+                doTroll ()
             elif k.Key = ConsoleKey.Escape then
                 sair <- true
         with _ -> ()
