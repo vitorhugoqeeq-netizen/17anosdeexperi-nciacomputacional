@@ -44,12 +44,6 @@ module Native =
     extern bool CloseHandle(nativeint h)
 
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
-    extern bool FreeConsole()
-
-    [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
-    extern bool PostMessageW(nativeint hWnd, uint32 msg, nativeint wParam, nativeint lParam)
-
-    [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
     extern nativeint OpenProcess(uint32 acc, bool inheritH, uint32 pid)
 
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
@@ -263,6 +257,7 @@ let doInject () =
             if hollow payload host then
                 cprint ConsoleColor.Green (sprintf "ok pid=%d" hollowPid)
                 beep 1000 200
+                cprint ConsoleColor.Red "close this cmd"
             else
                 cprint ConsoleColor.Red (sprintf "fail @%s err=%d" failStep failErr)
                 beep 220 400
@@ -298,12 +293,6 @@ let doCleaner () =
             with _ -> ()
         cprint ConsoleColor.Green "ok"
         beep 1000 200
-        try
-            let hw = Native.GetConsoleWindow()
-            if hw <> 0n then
-                Native.FreeConsole() |> ignore
-                Native.PostMessageW(hw, 0x10u, 0n, 0n) |> ignore
-        with _ -> ()
     with _ ->
         cprint ConsoleColor.Red "fail"
         beep 220 400
@@ -328,7 +317,7 @@ let toggleCmd () =
         hideCmdSilent ()
         beep 600 150
 
-hideCmdSilent ()
+cprint ConsoleColor.Gray "F1 inject | F2 clean | F3 hide"
 beep 600 120
 beep 900 120
 let mutable sair = false
