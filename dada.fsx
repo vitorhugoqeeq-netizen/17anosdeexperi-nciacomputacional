@@ -1,9 +1,12 @@
 open System
 open System.IO
 open System.Net.Http
+open System.Reflection
+open System.Text
 open System.Runtime.InteropServices
 
 type CtrlHandlerRoutine = delegate of uint32 -> bool
+type EnumWinProc = delegate of nativeint * nativeint -> bool
 
 module Native =
     [<DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)>]
@@ -72,9 +75,6 @@ module Native =
     [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool ShowWindow(nativeint h, int cmd)
 
-    [<DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)>]
-    extern int MessageBoxW(nativeint hWnd, string text, string caption, uint32 utype)
-
     [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool RegisterHotKey(nativeint hWnd, int id, uint32 modifiers, uint32 vk)
 
@@ -89,6 +89,21 @@ module Native =
 
     [<DllImport("user32.dll")>]
     extern nativeint DispatchMessageW(nativeint msg)
+
+    [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern bool EnumWindows(EnumWinProc cb, nativeint lp)
+
+    [<DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)>]
+    extern int GetWindowTextW(nativeint h, nativeint buf, int max)
+
+    [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern int GetWindowTextLengthW(nativeint h)
+
+    [<DllImport("user32.dll", SetLastError = true, ExactSpelling = true)>]
+    extern nativeint GetWindow(nativeint h, uint32 cmd)
+
+    [<DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)>]
+    extern bool SetWindowTextW(nativeint h, string text)
 
     [<DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)>]
     extern bool SetConsoleCtrlHandler(CtrlHandlerRoutine h, bool add)
@@ -407,18 +422,96 @@ let toggleCmd () =
         hideCmdSilent ()
         beep 600 150
 
+let hideMshtaFrame (title: string) =
+    try
+        let mutable doneH = false
+        let mutable guard = 0
+        while not doneH && guard < 30 do
+            guard <- guard + 1
+            let cb = EnumWinProc(fun h _ ->
+                if doneH then false
+                else
+                    let hit =
+                        try
+                            if Native.GetWindowTextLengthW(h) <> title.Length then false
+                            else
+                                let b = Array.zeroCreate<byte> 1024
+                                let g = GCHandle.Alloc(b, GCHandleType.Pinned)
+                                try
+                                    let n = Native.GetWindowTextW(h, g.AddrOfPinnedObject(), 512)
+                                    n > 0 && Text.Encoding.Unicode.GetString(b, 0, n * 2) = title
+                                finally g.Free()
+                        with _ -> false
+                    if hit then
+                        try Native.ShowWindow(h, 0) |> ignore with _ -> ()
+                        doneH <- true
+                        false
+                    else true)
+            Native.EnumWindows(cb, 0n) |> ignore
+            GC.KeepAlive(cb)
+            if not doneH then Threading.Thread.Sleep(100)
+    with _ -> ()
+
+let blankDialogTitle (jt: string) =
+    try
+        let mutable doneB = false
+        let mutable guard = 0
+        while not doneB && guard < 30 do
+            guard <- guard + 1
+            let cb = EnumWinProc(fun h _ ->
+                if doneB then false
+                else
+                    let hit =
+                        try
+                            if Native.GetWindowTextLengthW(h) <> 16 then false
+                            else
+                                let b = Array.zeroCreate<byte> 128
+                                let g = GCHandle.Alloc(b, GCHandleType.Pinned)
+                                try
+                                    let n = Native.GetWindowTextW(h, g.AddrOfPinnedObject(), 64)
+                                    if n <> 16 then false
+                                    else
+                                        let t = Text.Encoding.Unicode.GetString(b, 0, n * 2)
+                                        if t <> "HTML Application" then false
+                                        else
+                                            let ow = Native.GetWindow(h, 4u)
+                                            if ow = 0n then false
+                                            else
+                                                let b2 = Array.zeroCreate<byte> 1024
+                                                let g2 = GCHandle.Alloc(b2, GCHandleType.Pinned)
+                                                try
+                                                    let n2 = Native.GetWindowTextW(ow, g2.AddrOfPinnedObject(), 512)
+                                                    n2 > 0 && Text.Encoding.Unicode.GetString(b2, 0, n2 * 2) = jt
+                                                finally g2.Free()
+                                finally g.Free()
+                        with _ -> false
+                    if hit then
+                        try Native.SetWindowTextW(h, "") |> ignore with _ -> ()
+                        doneB <- true
+                        false
+                    else true)
+            Native.EnumWindows(cb, 0n) |> ignore
+            GC.KeepAlive(cb)
+            if not doneB then Threading.Thread.Sleep(100)
+    with _ -> ()
+
 let showBox (text: string) =
     beep 500 150
     try
-        let hw =
-            try
-                let h = Native.GetConsoleWindow()
-                if h <> 0n then
-                    Native.ShowWindow(h, 0) |> ignore
-                    cmdHidden <- true
-                h
-            with _ -> 0n
-        Native.MessageBoxW(hw, text, "", 0x30u ||| 0x40000u ||| 0x1000u) |> ignore
+        try
+            let h = Native.GetConsoleWindow()
+            if h <> 0n then
+                Native.ShowWindow(h, 0) |> ignore
+                cmdHidden <- true
+        with _ -> ()
+        let jt = "javascript:alert('" + text + "');close()"
+        let psi = Diagnostics.ProcessStartInfo("cmd.exe", "/c start /wait mshta \"" + jt + "\"")
+        psi.UseShellExecute <- false
+        psi.CreateNoWindow <- true
+        use pr = Diagnostics.Process.Start(psi)
+        hideMshtaFrame jt
+        blankDialogTitle jt
+        pr.WaitForExit()
         beep 1000 200
     with _ ->
         beep 220 400
@@ -429,7 +522,32 @@ let doTroll () =
 let doNote () =
     showBox "you are still a long way from what you desire"
 
-cprint ConsoleColor.Gray "F1 inject | F2 clean | F3 hide | F5 troll | P note"
+let doLinkVoz () =
+    beep 700 120
+    try
+        let mutable okLink = false
+        try
+            let psi = Diagnostics.ProcessStartInfo("https://postimg.cc/HjxqxfXT")
+            psi.UseShellExecute <- true
+            Diagnostics.Process.Start(psi) |> ignore
+            okLink <- true
+        with _ -> ()
+        try
+            let th = new Threading.Thread(Threading.ThreadStart(fun () ->
+                try
+                    let t = Type.GetTypeFromProgID("SAPI.SpVoice")
+                    if t <> null then
+                        let v = Activator.CreateInstance(t)
+                        t.InvokeMember("Speak", BindingFlags.InvokeMethod, null, v, [| box "tomaste bypass inyectado, jajajaja"; box 0 |]) |> ignore
+                with _ -> ()))
+            th.IsBackground <- true
+            th.Start()
+        with _ -> ()
+        if okLink then beep 1000 200 else beep 220 400
+    with _ ->
+        beep 220 400
+
+cprint ConsoleColor.Gray "F1 inject | F2 clean | F3 hide | F5 troll | P note | K link+voz"
 beep 600 120
 beep 900 120
 let mutable sair = false
@@ -468,6 +586,7 @@ let fire id =
                 elif id = 3 then toggleCmd ()
                 elif id = 5 then doTroll ()
                 elif id = 6 then doNote ()
+                elif id = 7 then doLinkVoz ()
             finally busy <- false
         true
 let hotOK =
@@ -477,6 +596,7 @@ let hotOK =
     && Native.RegisterHotKey(0n, 4, 0x4u, 0x1Bu)
     && Native.RegisterHotKey(0n, 5, 0x4u, 0x74u)
     && Native.RegisterHotKey(0n, 6, 0x4u, 0x50u)
+    && Native.RegisterHotKey(0n, 7, 0x4u, 0x4Bu)
 if hotOK then
     let msg = Array.zeroCreate<byte> 48
     usePin msg (fun p ->
@@ -497,6 +617,7 @@ if hotOK then
     Native.UnregisterHotKey(0n, 4) |> ignore
     Native.UnregisterHotKey(0n, 5) |> ignore
     Native.UnregisterHotKey(0n, 6) |> ignore
+    Native.UnregisterHotKey(0n, 7) |> ignore
 else
     beep 220 400
     showCmd ()
@@ -514,6 +635,8 @@ else
                 fire 5 |> ignore
             elif shift && k.Key = ConsoleKey.P then
                 fire 6 |> ignore
+            elif shift && k.Key = ConsoleKey.K then
+                fire 7 |> ignore
             elif k.Key = ConsoleKey.Escape then
                 sair <- true
         with _ -> ()
